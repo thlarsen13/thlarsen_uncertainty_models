@@ -37,6 +37,7 @@ import tensorflow_datasets as tfds
 import uncertainty_baselines as ub
 import utils  # local file import
 from tensorboard.plugins.hparams import api as hp
+from entropy_uncertainty import Uncertainty
 
 flags.DEFINE_integer('kl_annealing_epochs', 200,
                      'Number of epoch over which to anneal the KL term to 1.')
@@ -55,6 +56,7 @@ FLAGS = flags.FLAGS
 
 def main(argv):
   del argv  # unused arg
+  u = Uncertainty()
   tf.io.gfile.makedirs(FLAGS.output_dir)
   logging.info('Saving checkpoints at %s', FLAGS.output_dir)
   tf.random.set_seed(FLAGS.seed)
@@ -237,6 +239,7 @@ def main(argv):
       optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
       probs = tf.nn.softmax(logits)
+
       metrics['train/ece'].add_batch(probs, label=labels)
       metrics['train/loss'].update_state(loss)
       metrics['train/negative_log_likelihood'].update_state(
@@ -257,14 +260,19 @@ def main(argv):
       labels = inputs['labels']
       # TODO(trandustin): Use more eval samples only on corrupted predictions;
       # it's expensive but a one-time compute if scheduled post-training.
-      if FLAGS.num_eval_samples > 1 and dataset_name != 'clean':
+      # if FLAGS.num_eval_samples > 1 and dataset_name != 'clean':
+      if FLAGS.num_eval_samples > 1:
         logits = tf.stack([model(images, training=False)
                            for _ in range(FLAGS.num_eval_samples)], axis=0)
       else:
         logits = model(images, training=False)
       probs = tf.nn.softmax(logits)
-      if FLAGS.num_eval_samples > 1 and dataset_name != 'clean':
+      print(probs.shape)
+      u.compute_entropy_uncertainty(probs)
+      # exit()
+      if FLAGS.num_eval_samples > 1:
         probs = tf.reduce_mean(probs, axis=0)
+
       negative_log_likelihood = tf.reduce_mean(
           tf.keras.losses.sparse_categorical_crossentropy(labels, probs))
 
@@ -359,6 +367,7 @@ def main(argv):
           os.path.join(FLAGS.output_dir, 'checkpoint'))
       logging.info('Saved checkpoint to %s', checkpoint_name)
 
+  u.batch_uncertainty()
   final_checkpoint_name = checkpoint.save(
       os.path.join(FLAGS.output_dir, 'checkpoint'))
   logging.info('Saved last checkpoint to %s', final_checkpoint_name)
@@ -370,6 +379,8 @@ def main(argv):
         'prior_stddev': FLAGS.prior_stddev,
         'stddev_init': FLAGS.stddev_init,
     })
+
+
 
 
 if __name__ == '__main__':
