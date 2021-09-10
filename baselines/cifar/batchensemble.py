@@ -37,6 +37,7 @@ flags.DEFINE_float('fast_weight_lr_multiplier', 0.5,
 flags.FLAGS.set_default('l2', 3e-4)
 flags.FLAGS.set_default('lr_decay_epochs', ['80', '160', '180'])
 flags.FLAGS.set_default('train_epochs', 250)
+
 FLAGS = flags.FLAGS
 
 
@@ -61,7 +62,7 @@ def main(argv):
     tf.tpu.experimental.initialize_tpu_system(resolver)
     strategy = tf.distribute.TPUStrategy(resolver)
 
-  train_builder = ub.datasets.get(
+  train_builder = ub.datasets.get( #Download Dataset
       FLAGS.dataset,
       data_dir=data_dir,
       download_data=FLAGS.download_data,
@@ -91,6 +92,7 @@ def main(argv):
   test_datasets = {
       'clean': strategy.experimental_distribute_dataset(clean_test_dataset),
   }
+  #Training Hyperparameters
   steps_per_epoch = train_builder.num_examples // batch_size
   steps_per_eval = clean_test_builder.num_examples // batch_size
   num_classes = 100 if FLAGS.dataset == 'cifar100' else 10
@@ -114,7 +116,7 @@ def main(argv):
 
   with strategy.scope():
     logging.info('Building Keras model')
-    model = ub.models.wide_resnet_batchensemble(
+    model = ub.models.wide_resnet_batchensemble( #Construct model
         input_shape=(32, 32, 3),
         depth=28,
         width_multiplier=10,

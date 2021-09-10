@@ -37,7 +37,8 @@ import tensorflow_datasets as tfds
 import uncertainty_baselines as ub
 import utils  # local file import
 from tensorboard.plugins.hparams import api as hp
-from entropy_uncertainty import Uncertainty
+from entropy_uncertainty import compute_entropy_uncertainty
+import threading
 
 flags.DEFINE_integer('kl_annealing_epochs', 200,
                      'Number of epoch over which to anneal the KL term to 1.')
@@ -53,10 +54,11 @@ flags.FLAGS.set_default('train_epochs', 250)
 flags.FLAGS.set_default('train_proportion', 0.95)
 FLAGS = flags.FLAGS
 
+tf.config.run_functions_eagerly(True) 
 
 def main(argv):
   del argv  # unused arg
-  u = Uncertainty()
+  # u = Uncertainty()
   tf.io.gfile.makedirs(FLAGS.output_dir)
   logging.info('Saving checkpoints at %s', FLAGS.output_dir)
   tf.random.set_seed(FLAGS.seed)
@@ -252,7 +254,7 @@ def main(argv):
       strategy.run(step_fn, args=(next(iterator),))
 
   @tf.function
-  def test_step(iterator, dataset_split, dataset_name, num_steps):
+  def test_step(iterator, dataset_split, dataset_name, num_steps, epoch, threads):
     """Evaluation StepFn."""
     def step_fn(inputs):
       """Per-Replica StepFn."""
@@ -267,8 +269,11 @@ def main(argv):
       else:
         logits = model(images, training=False)
       probs = tf.nn.softmax(logits)
-      print(probs.shape)
-      u.compute_entropy_uncertainty(probs)
+      # print(probs.shape)
+      threads.append(threading.Thread(target=compute_entropy_uncertainty, args=(labels, probs, epoch)))
+
+      # compute_entropy_uncertainty(labels, probs, epoch)
+      # epoch_count += 1
       # exit()
       if FLAGS.num_eval_samples > 1:
         probs = tf.reduce_mean(probs, axis=0)
@@ -297,6 +302,7 @@ def main(argv):
   train_iterator = iter(train_dataset)
   start_time = time.time()
   for epoch in range(initial_epoch, FLAGS.train_epochs):
+    threads = []
     logging.info('Starting to run epoch: %s', epoch)
     train_step(train_iterator)
 
@@ -318,7 +324,7 @@ def main(argv):
     if validation_dataset:
       validation_iterator = iter(validation_dataset)
       test_step(
-          validation_iterator, 'validation', 'clean', steps_per_validation)
+          validation_iterator, 'validation', 'clean', steps_per_validation, epoch, threads)
     datasets_to_evaluate = {'clean': test_datasets['clean']}
     if (FLAGS.corruptions_interval > 0 and
         (epoch + 1) % FLAGS.corruptions_interval == 0):
@@ -328,7 +334,7 @@ def main(argv):
       logging.info('Testing on dataset %s', dataset_name)
       logging.info('Starting to run eval at epoch: %s', epoch)
       test_start_time = time.time()
-      test_step(test_iterator, 'test', dataset_name, steps_per_eval)
+      test_step(test_iterator, 'test', dataset_name, steps_per_eval, "test", threads)
       ms_per_example = (time.time() - test_start_time) * 1e6 / batch_size
       metrics['test/ms_per_example'].update_state(ms_per_example)
 
@@ -339,7 +345,6 @@ def main(argv):
         (epoch + 1) % FLAGS.corruptions_interval == 0):
       corrupt_results = utils.aggregate_corrupt_metrics(corrupt_metrics,
                                                         corruption_types)
-
     logging.info('Train Loss: %.4f, Accuracy: %.2f%%',
                  metrics['train/loss'].result(),
                  metrics['train/accuracy'].result() * 100)
@@ -348,6 +353,15 @@ def main(argv):
                  metrics['test/accuracy'].result() * 100)
     total_results = {name: metric.result() for name, metric in metrics.items()}
     total_results.update(corrupt_results)
+
+    for x in threads: 
+        x.start()
+
+    for index, thread in enumerate(threads):
+        logging.info("Main    : before joining thread %d.", index)
+        thread.join()
+        logging.info("Main    : thread %d done", index)
+
     # Metrics from Robustness Metrics (like ECE) will return a dict with a
     # single key/value, instead of a scalar.
     total_results = {
@@ -367,7 +381,7 @@ def main(argv):
           os.path.join(FLAGS.output_dir, 'checkpoint'))
       logging.info('Saved checkpoint to %s', checkpoint_name)
 
-  u.batch_uncertainty()
+  # u.batch_uncertainty()
   final_checkpoint_name = checkpoint.save(
       os.path.join(FLAGS.output_dir, 'checkpoint'))
   logging.info('Saved last checkpoint to %s', final_checkpoint_name)
